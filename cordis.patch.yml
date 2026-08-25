@@ -1,0 +1,23 @@
+# dsh-highres-vision
+#
+# 把 DSH 本地的图片准入上限提高到 DeepSeek 官方 API 文档限制，
+# 并挂载高清分块识图插件（highres_read 工具 + pre-step 强制提醒）。
+
+# 1) 挂载本插件
+- insert:
+    - id: dsh-highres-vision
+      name: dsh-highres-vision
+
+# 2) 放宽本地附件准入限制
+- id: attachment-local
+  config:
+    maxImageBytes: 33554432          # 32 MiB，官方单图内联上限
+    maxImageDimension: 8192          # 8192px，官方单图单边上限
+    maxImagePixels: 67108864         # 8192 x 8192 像素
+    maxImagesPerMessage: 600         # 官方单请求最大图片数
+    maxMessageImageBytes: 67108864   # 64 MiB，inline 单请求图片总量
+
+# 3) 提高 DeepSeek 适配器累计 base64 图片负载上限
+- id: llm-deepseek
+  config:
+    maxRequestImageBytes: 46137344   # 44 MiB，给 48 MiB 请求体保留约 4 MiB 余量

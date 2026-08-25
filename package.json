@@ -1,0 +1,30 @@
+{
+    "name": "dsh-highres-vision",
+    "version": "0.2.0",
+    "description": "DeepSeek Harness vision enhancer: raises image limits to official values and provides high-resolution tiled image reading via a dedicated tool.",
+    "type": "module",
+    "main": "./lib/index.js",
+    "exports": {
+        ".": "./lib/index.js",
+        "./cordis.patch.yml": "./cordis.patch.yml",
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "lib",
+        "cordis.patch.yml",
+        "README.md",
+        "LICENSE"
+    ],
+    "license": "MIT",
+    "engines": {
+        "node": ">=18"
+    },
+    "dependencies": {
+        "jimp": "^1.6.1"
+    },
+    "dsh": {
+        "bundle": {
+            "patch": "./cordis.patch.yml"
+        }
+    }
+}
