@@ -1,23 +1,103 @@
-# dsh-highres-vision
+# dsh-highres-vision  v0.3.1
 #
 # 把 DSH 本地的图片准入上限提高到 DeepSeek 官方 API 文档限制，
-# 并挂载高清分块识图插件（highres_read 工具 + pre-step 强制提醒）。
+# 并挂载高清分块识图插件（highres_read 工具 + pre-step 提醒）。
+#
+# 官方限制表（api-docs.deepseek.com/guides/vision，2026-09-10 复核）：
+#   支持格式 JPEG / PNG / GIF / WebP
+#   外链长度 8192 字符
+#   请求体 48 MiB
+#   单图（base64 / 外链）32 MiB
+#   单图（Files API file_id）64 MiB
+#   单请求最大图片数 600
+#   单请求图片总量 不含 file_id 64 MiB；含 file_id 200 MiB
+#   单边像素 8192px；单请求 >=15 张图时降为 4096px
 
 # 1) 挂载本插件
 - insert:
     - id: dsh-highres-vision
       name: dsh-highres-vision
 
-# 2) 放宽本地附件准入限制
+# 2) 放宽本地附件限制（对齐上面的官方限制表）
+#
+# ⚠ 这里有两套**独立**预算，只设一套等于没设（v0.3.0 就栽在这）：
+#
+#   A. 源准入（max* 那组）：图片**收不收**，超标直接拒收。
+#   B. 规范化（normalized* 那组）：收下后**存进附件库的那份**长什么样 ——
+#      provider 无关的确定性副本，read_image / highres_read 读的就是它。
+#
+# v0.3.0 只设了 A。后果实测：3840x2160 通过 A，却在 B 被
+#   normalizedImageMaxPixels 的默认值 2048*2048 = 4,194,304 缩成 2730x1536
+# （requestImageDimensions(3840,2160,4194304) === 2730x1536，逐位吻合），
+# 进附件库时已丢 49.4% 像素，后面 1300 的分块是在降质源上做的。
+#
+# 约束（dsh-tool-fs 文档）：规范化字节预算不能高于 maxImageBytes，
+# 否则 read_image 读规范化对象路径会被拒。此处 16 MiB < 32 MiB ✓
 - id: attachment-local
   config:
-    maxImageBytes: 33554432          # 32 MiB，官方单图内联上限
+    # ── A. 源准入 ──
+    maxImageBytes: 33554432          # 32 MiB，官方单图（base64 / 外链）上限
     maxImageDimension: 8192          # 8192px，官方单图单边上限
     maxImagePixels: 67108864         # 8192 x 8192 像素
     maxImagesPerMessage: 600         # 官方单请求最大图片数
     maxMessageImageBytes: 67108864   # 64 MiB，inline 单请求图片总量
+    # ── B. 规范化（v0.3.1 新增）──
+    normalizedImageMaxPixels: 67108864    # 与 maxImagePixels 同值：已准入的图不再降采样
+    normalizedImageMaxDimension: 8192     # 与 maxImageDimension 同值
+    normalizedImageMaxBytes: 16777216     # 16 MiB（默认 4 MiB）；只影响质量阶梯余量
 
 # 3) 提高 DeepSeek 适配器累计 base64 图片负载上限
+#
+# ⚠ v0.2.0 及更早版本这里写的是 maxRequestImageBytes —— 该键在
+#   harness 0.1.2-rc.1 的 dsh-llm-deepseek 里已不存在，写了也不会被读取
+#   （实测 Schemastery 3.18.2 不剥离未知键也不报错，所以是静默 no-op）。
+#   现行键名是 maxInlineRequestImageBytes（默认 20 MiB）。
+#
+# 约束（dsh-llm-deepseek 的 resolveAdapterOptions 会强校验）：
+#   inlineImageOffloadByteQuantum（默认 10 MiB）必须 <= maxInlineRequestImageBytes
+#   其它相关键：maxRequestFilesBytes（默认 128 MiB）、imageOffloadByteQuantum（64 MiB）、
+#               maxImagesPerRequest（默认 600，已等于官方值，无需覆盖）
 - id: llm-deepseek
   config:
-    maxRequestImageBytes: 46137344   # 44 MiB，给 48 MiB 请求体保留约 4 MiB 余量
+    maxInlineRequestImageBytes: 46137344   # 44 MiB，给 48 MiB 请求体保留约 4 MiB 余量
+
+# 4) 每个视觉模型的请求投影像素预算 —— v0.3.0 起由插件自动处理，不在这里写
+#
+# 宿主适配器在发请求前还会按「每个模型」的 imagePixelBudget / imageMaxBytes
+# 再投影一次（dsh-llm-deepseek 的 resolveRequestImagePolicy）。模型条目没有
+# 显式声明时，内核默认是 640000（≈800x800）/ 1 MiB —— V4-Flash-Vision-Exp 时代
+# 的基线。不改它，lib/tile.js 的 1300 分块会在请求前被压回 800x800。
+#
+# v0.3.0 改为在运行时通过 settings 服务写入（lib/model-budget.js）：
+#   settings.update('llm-deepseek', { models: [...] })
+# 走内核给配置界面用的正规路径，带 schema 校验与 revision 冲突检测，
+# 落盘后适配器立刻换源，**无需重启**。
+#
+# ⚠ 为什么不能写在这个补丁文件里（两条硬约束）：
+#   1. 补丁对目标行的 `config` 是「整块替换」而不是合并 —— 见
+#      @deepseek-ai/dsh-base 的 cordis.patch.yml 头部注释。写 `models` 会把
+#      用户已有的模型条目整批冲掉。
+#   2. `models` 是数组，settings 的 mergeLayers 对非普通对象是「覆盖」语义；
+#      并且 dsh-llm-deepseek 通过 settings.installSection 把配置源指向 settings
+#      的解析结果（apply() 内 setSource((source) => current = source)），
+#      所以补丁层的 `models` 会被用户层 settings.yaml 永久压过。
+#
+# 插件默认行为（可用 config 关闭/覆盖）：
+#   autoRaiseModelBudget: true        # false = 完全不做预算抬升
+#   modelImagePixelBudget: 1690000    # 1300 x 1300
+#   modelImageMaxBytes: 8388608       # 8 MiB
+#
+# 规则：只处理已声明 `image` 模态的条目；只加字段、只抬不降；跳过显式
+# `imagePixelBudget: "low"`；只在真的需要改时才写盘。
+#
+# 若宿主的 settings provider 是只读的（写入会被拒绝），插件只会记一条 warn、
+# 其余功能照常，此时请手工在 settings.yaml 的 llm-deepseek.models 里加：
+#
+#       - id: deepseek-flash                     # V4.1-Flash 的正式名（2026-09-10 起）
+#         name: DeepSeek-V4.1-Flash
+#         inputModalities: [text, image]
+#         imagePixelBudget: 1690000
+#         imageMaxBytes: 8388608
+#
+# 说明：imagePixelBudget / imageMaxBytes 必须与 lib/tile.js 的 TILE_SIZE 同批调整；
+# 只抬一边等于白改。纯文本模型声明这两项会被 resolveModels 直接判错。

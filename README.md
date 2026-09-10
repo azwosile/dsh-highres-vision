@@ -4,161 +4,99 @@
 > 星星越多，鲸鱼娘越开心，也会更有动力继续维护这个插件喵～ 💙
 > （求求啦喵～）
 
-> ⚠️ **本插件专供 `deepseek-v4-flash-vision-exp` 模型使用。**
-> 该模型是 DeepSeek 的视觉多模态模型，支持图片输入；
-> 本插件针对它的 800×800 等效缩放、单图 32MiB / 8192px 上限做了高清分块增强。
-> **其他模型通常不支持图片输入，或无法获得同样的高清识图效果。**
+> ⚠️ **只给 DeepSeek 的视觉模型用。**
+> 2026-09-10 起视觉模型是 **DeepSeek-V4.1-Flash**（正式名 `deepseek-flash`）；
+> 旧名 `deepseek-v4-flash-vision-exp` / `deepseek-v4-flash` 仍被接受，请求同样转由 V4.1-Flash 承接。
+> `deepseek-v4-pro` 官方不支持视觉。
 
-DeepSeek Harness 高清识图增强插件（v0.2.0）。
-（本身也是由 deepseek v4 flash vision exp 开发()）
-整合两个能力：
+DeepSeek Harness 高清识图增强插件 **v0.3.0**（本身也是由 deepseek v4 flash vision exp 开发()）
 
-1. **放宽图片限制**
-   - 单图 32 MiB
-   - 单边 8192px
-   - 单请求 600 张
-   - inline 总量 64 MiB
-   - base64 累计 44 MiB
+## 功能
 
-2. **高清分块识图**
-   - 注册 `highres_read` 工具
-   - 自动定位当前会话最近一张用户图片
-   - 生成整图 + ≤800×800 高清分块（overlap 自动：40/80/120px）
-   - 通过宿主 `read_image` 把整图和每个分块注入模型
-   - **不覆盖宿主 `read_image`**，`read_image` 保持原样
-   - `agent/pre-step` 提醒：仅当出现 >800×800 的大图且模型未调用 `highres_read` 时提示
+**1. 仅在 DeepSeek 系列模型下启用**
+按会话判定当前 provider / model，非 DeepSeek 时对**那个 agent** 屏蔽 `highres_read`，
+也不注入 pre-step 提醒（不影响其它会话）。中途切换模型即时生效。
+判定：provider 为 `deepseek-official`，或模型名含 `deepseek`（兜住第三方中转）。
+判定不出时按 `unknownModelPolicy` 处理，默认 `allow`。
 
-> 🆕 **v0.2.0：纯 Node 实现。** 分块引擎从 `scripts/tile_image.py` 改为 `lib/tile.js`（基于 `jimp`），
-> 不再依赖系统 Python 与 Pillow。`dsh plugin add` 安装后开箱即用。
+**2. 自动抬升每模型图片预算**
+宿主适配器（官方 `dsh-llm-deepseek`）会按每个模型的 `imagePixelBudget` 把图片二次投影，
+官方默认值只有 640000 像素（≈800×800）/ 1 MiB。
+插件加载时**逐条**判定，只给 **DeepSeek 系列**且已声明 `image` 模态的条目补上
+`imagePixelBudget: 1690000`（1300×1300）与 `imageMaxBytes: 8388608`（8 MiB），
+**立即生效，无需重启**。
 
-## 文件结构
+- 写入目标只有 `llm-deepseek` 这一个 settings 命名空间（官方 DeepSeek 适配器自己的模型目录）；
+  `ginka-*` / `amd` 等 `llm-pi-ai` provider **结构上不会被碰**
+- 逐条白名单：id 或 name 不含 `deepseek` 的条目一律跳过
+- 只抬不降、不动纯文本模型、不动显式 `low` 档、只在需要时才写盘
 
-```text
-dsh-highres-vision/
-├── package.json
-├── cordis.patch.yml          # 放宽限制 + 挂载插件
-├── lib/
-│   ├── index.js              # highres_read 工具 / pre-step 提醒
-│   └── tile.js               # 纯 Node 分块引擎（jimp）
-├── README.md
-├── LICENSE
-└── .gitignore
+**3. 放宽图片限制**
+**源准入 + 规范化两套预算一起放宽**，图片进附件库时不再被降采样。
+单图 32 MiB / 单边 8192px / 单请求 600 张 / inline 总量 64 MiB / base64 累计 44 MiB
+/ 规范化长边 8192px（DSH 默认 2048px）。
+> v0.3.0 只设了源准入，结果 3840×2160 在入库时被缩成 2730×1536（**丢 49.4% 像素**）；
+> v0.3.1 补上规范化预算后原样入库。
+
+**4. 高清分块识图**
+注册 `highres_read` 工具，自动定位当前会话最近一张用户图片，生成
+**整图 + ≤1300×1300 高清分块**（overlap 自动 65 / 130 / 195px）后通过宿主 `read_image` 注入模型。
+不覆盖宿主 `read_image`。用户发大图且模型未调用该工具时，`agent/pre-step` 会提醒。
+工具参数：`tile` / `overlap` / `skipWhole` / `maxTiles`。
+
+## 相对 v0.2.0 的改动
+
+| # | 改动 | 说明 |
+|---|---|---|
+| 1 | **分块基线 800 → 1300** | V4.1-Flash 的等效像素从 ≈800×800 / 384 token 提到 ≈1300×1300 / 1024 token。沿用 800 白丢约 62% 分辨率 |
+| 2 | **新增「仅 DeepSeek 系列启用」** | 非 DeepSeek 会话下对该 agent 屏蔽 `highres_read`，切模型即时生效；不碰别的会话 |
+| 3 | **新增自动抬升每模型图片预算** | 新增 `lib/model-budget.js`。不抬这段，1300 的分块会在发请求前被压回 800×800 |
+| 4 | **修复失效配置键** | `cordis.patch.yml` 里 `maxRequestImageBytes` 在 harness 0.1.2-rc.1 已不存在（静默 no-op），改为 `maxInlineRequestImageBytes` |
+| 5 | **修复漏掉的规范化预算**（0.3.1） | 只抬源准入不够：DSH 规范化默认把图压到 2048×2048 以内，3840×2160 入库即丢 49.4% 像素。补上 `normalizedImageMax*` 三个键 |
+| 6 | **新增可配置项** | `deepseekOnly` / `unknownModelPolicy` / `modelBudgetScope` / `tile` / `overlap` / `remind` / `remindThreshold` / `autoRaiseModelBudget` / `modelImagePixelBudget` / `modelImageMaxBytes` |
+| 7 | **新增离线自检** | `verify.mjs`，不装插件也能跑 |
+| 8 | **移除 router-standard 兼容说明** | 上游那套预设已不适配 V4.1-Flash |
+
+> 没变的部分：纯 Node 实现（依赖 `jimp`，不需要 Python / Pillow）、不覆盖宿主 `read_image`、
+> 识别后清理本次临时目录而不动附件库。
+
+## 配置
+
+```yaml
+- id: dsh-highres-vision
+  name: dsh-highres-vision
+  config:
+    deepseekOnly: true               # 只在 DeepSeek 系列模型下启用
+    unknownModelPolicy: allow        # 判定不出模型时：allow | deny
+    autoRaiseModelBudget: true       # false = 不抬模型预算
+    modelBudgetScope: deepseek       # deepseek = 只改 DeepSeek 条目；all = 该命名空间全部
+    modelImagePixelBudget: 1690000   # 1300 x 1300
+    modelImageMaxBytes: 8388608      # 8 MiB
+    tile: 1300                       # 单块最大边长；旧基线可设 800
+    overlap: 0                       # 0 = 自动
+    remind: true                     # false = 关闭 pre-step 提醒
+    remindThreshold: 1300            # 缺省与 tile 一致
 ```
 
-## 分块逻辑（完整版）
+`modelImagePixelBudget` 需要与 `tile` 同批调整。
 
-1. **定位原图**
-   - 优先自动定位当前会话最近一张用户图片；
-   - 也支持传入 `file_path` / `attachmentId`。
-
-2. **判断是否需要分块**
-   - 宽和高都 ≤ 800×800：只返回整图，不分块；
-   - 任意一边 > 800×800：生成整图缩略图 + 多个子块。
-
-3. **子块生成规则**
-   - `tile = 800px`
-   - `overlap` 自动：
-     | 原图最大边 | 自动 overlap |
-     |---|---|
-     | ≤ 1600px | 40px |
-     | 1600 ~ 3000px | 80px |
-     | > 3000px | 120px |
-   - 相邻块至少重叠指定像素，最后一块贴原图边缘；
-   - 每块尽量接近 800×800，避免边缘细节被切丢。
-
-4. **注入模型**
-   - 先 `read_image` 整图缩略图；
-   - 再逐块 `read_image` 所有子块；
-   - 模型基于“整图 + 全部分块”输出完整识别结果。
-
-5. **清理**
-   - 识别完成后清理本次临时目录；
-   - **不清理附件库**。
-
-### 示例
-
-| 原图尺寸 | 自动 overlap | 子块数 |
-|---|---|---|
-| 1280×720 | 40px | 2 块 + 整图 |
-| 2560×1600 | 80px | 12 块 + 整图 |
-| 3840×2160 | 120px | 18 块 + 整图 |
-| 5120×2880 | 120px | 40 块 + 整图 |
-
-> 以上块数为按当前算法的大致结果，实际以脚本输出为准。
-
-## ⚠️ Token 消耗提示
-
-- `highres_read` 会把 **1 张整图 + N 张子块** 全部注入模型；
-- 每张图片都会消耗视觉 token，所以**总消耗远高于直接识别一张原图**；
-- 图片越大，子块越多，消耗越大：
-  - 3840×2160 约 19 张图（整图 + 18 子块）
-  - 5120×2880 约 41 张图（整图 + 40 子块）
-- 如果用户只需要**粗略描述/整体判断**，可以直接用模型视觉能力，不需要调用本工具；
-- 只有需要 **OCR、小字、局部细节** 时才建议使用；
-- 可用 `max_tiles` 限制最多读取的子块数，降低耗时与成本。
+> 边界：插件**只抬预算，不改模型名与模态**。模型没写 `inputModalities: [text, image]`
+> 时按内核规则视为纯文本而跳过，需要你自行添加。
 
 ## 安装
 
-### 方式一：从 GitHub 安装（推荐，收录后可直接用）
-
-```text
-dsh plugin add github:azwosile/dsh-highres-vision
+```powershell
+dsh plugin --profile web add "D:\path\to\dsh-highres-vision"
 ```
 
-重启 DSH Desktop 后，限制 patch 与 router 首轮工具配置完全生效。
+装配后重启 DSH Desktop 一次（放宽准入限制的 bundle 补丁只在启动时读取）。
+Node >= 18，依赖 `jimp` 安装时自动装好。
 
-### 方式二：本地开发安装
+自检：
 
-```text
-dev_install_package /path/to/dsh-highres-vision
-```
-
-或：
-
-```text
-dev_inject_plugin /path/to/dsh-highres-vision
-```
-
-> v0.2.0 起无需 Python / Pillow，Node >= 18 即可（依赖 `jimp` 会在安装时自动装好）。
-
-## ⚠️ 兼容性说明（风神插件）
-
-如果你使用 `router-standard`（风神插件），它的“RL 接口还原”会在**第一轮只暴露极少数工具**。
-
-如果没有把 `highres_read` 加进 `preserveTools`：
-
-- 模型第一轮**看不到也调不了** `highres_read`；
-- pre-step 提醒会提示它调用，但工具不可见，等于没用；
-- 第一次调用工具也会因此失败/不可见。
-
-**需要手动加：**
-
-```yaml
-# <profile>/.agent-presets/router-standard/agent.cordis.yml
-preserveTools:
-  - infinite_gen1_profile
-  - skill
-  - highres_read
-```
-
-或改用不收敛首轮工具面的预设（如标准 preset / 全工具 preset）。
-
-> 简单说：**未改动的 router-standard 不兼容本插件的首轮工具调用**，装好后务必按上面配置。
-
-## 使用
-
-模型识图时：
-
-```text
-用户上传大图（>800×800）
-  ↓
-pre-step 提醒：请先调用 highres_read
-  ↓
-highres_read()
-  ↓
-自动定位附件 → 切块 → 返回整图 + tiles
-  ↓
-模型基于整图和分块输出完整识别结果
+```powershell
+node verify.mjs            # 自包含合成图，预期 84 通过 / 0 失败
+node verify.mjs <样本目录>  # 额外跑本地真实图片
 ```
 
 ## 回滚
@@ -166,5 +104,7 @@ highres_read()
 ```text
 dev_uninject_plugin dsh-highres-vision
 ```
+
+> 预算抬升写进 `settings.yaml` 后不会随卸载自动撤销，需手动删掉那两个字段或走 Models 页重置。
 
 dsv4fv开发
