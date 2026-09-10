@@ -9,7 +9,7 @@
 > 旧名 `deepseek-v4-flash-vision-exp` / `deepseek-v4-flash` 仍被接受，请求同样转由 V4.1-Flash 承接。
 > `deepseek-v4-pro` 官方不支持视觉。
 
-DeepSeek Harness 高清识图增强插件 **v0.3.0**（本身也是由 deepseek v4 flash vision exp 开发()）
+DeepSeek Harness 高清识图增强插件 **v0.3.1**（本身也是由 deepseek v4 flash vision exp 开发()）
 
 ## 功能
 
@@ -32,10 +32,15 @@ DeepSeek Harness 高清识图增强插件 **v0.3.0**（本身也是由 deepseek 
 - 只抬不降、不动纯文本模型、不动显式 `low` 档、只在需要时才写盘
 
 **3. 放宽图片限制**
-**源准入 + 规范化两套预算一起放宽**，图片进附件库时不再被降采样。
-单图 32 MiB / 单边 8192px / 单请求 600 张 / inline 总量 64 MiB / base64 累计 44 MiB
-/ 规范化长边 8192px（DSH 默认 2048px）。
-> v0.3.0 只设了源准入，结果 3840×2160 在入库时被缩成 2730×1536（**丢 49.4% 像素**）；
+**源准入 + 规范化是两套独立预算，这里一起放宽**，图片进附件库时不再被降采样。
+
+- **源准入**（超标直接拒收）：单图 32 MiB / 单边 8192px / 单请求 600 张 / inline 总量 64 MiB
+- **规范化**（存进附件库的那份）：像素上限 8192×8192（DSH 默认 **2048×2048**）/
+  长边 8192px / 编码字节 16 MiB（DSH 默认 4 MiB）
+- **适配器**：base64 累计 44 MiB
+
+> ⚠️ 只改源准入是不够的 —— v0.3.0 就栽在这：3840×2160 通过准入后，
+> 被规范化默认值砍成 2730×1536（**丢 49.4% 像素**），后面 1300 的分块是在降质源上做的。
 > v0.3.1 补上规范化预算后原样入库。
 
 **4. 高清分块识图**
@@ -86,24 +91,27 @@ DeepSeek Harness 高清识图增强插件 **v0.3.0**（本身也是由 deepseek 
 ## 安装
 
 ```powershell
-dsh plugin --profile web add "D:\path\to\dsh-highres-vision"
+git clone https://github.com/azwosile/dsh-highres-vision.git
+dsh plugin --profile web add ./dsh-highres-vision
 ```
 
-装配后重启 DSH Desktop 一次（放宽准入限制的 bundle 补丁只在启动时读取）。
-Node >= 18，依赖 `jimp` 安装时自动装好。
+装配后重启 DSH Desktop 一次（放宽准入限制的 bundle 补丁只在启动时组合）。
+Node >= 18，依赖 `jimp` 安装时自动装好，不需要 Python / Pillow。
 
-自检：
+自检（不装插件也能跑）：
 
 ```powershell
-node verify.mjs            # 自包含合成图，预期 84 通过 / 0 失败
+node verify.mjs            # 自包含合成图，预期 98 通过 / 0 失败
 node verify.mjs <样本目录>  # 额外跑本地真实图片
 ```
 
 ## 回滚
 
 ```text
-dev_uninject_plugin dsh-highres-vision
+dsh plugin --profile web remove dsh-highres-vision
 ```
+
+（装了超级注入器的话也可以用 `dev_uninject_plugin dsh-highres-vision`）
 
 > 预算抬升写进 `settings.yaml` 后不会随卸载自动撤销，需手动删掉那两个字段或走 Models 页重置。
 
