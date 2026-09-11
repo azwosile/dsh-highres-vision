@@ -1,4 +1,4 @@
-# dsh-highres-vision  v0.3.1
+# dsh-highres-vision  v0.3.2
 #
 # 把 DSH 本地的图片准入上限提高到 DeepSeek 官方 API 文档限制，
 # 并挂载高清分块识图插件（highres_read 工具 + pre-step 提醒）。

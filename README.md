@@ -9,7 +9,20 @@
 > 旧名 `deepseek-v4-flash-vision-exp` / `deepseek-v4-flash` 仍被接受，请求同样转由 V4.1-Flash 承接。
 > `deepseek-v4-pro` 官方不支持视觉。
 
-DeepSeek Harness 高清识图增强插件 **v0.3.1**（本身也是由 deepseek v4 flash vision exp 开发()）
+DeepSeek Harness 高清识图增强插件 **v0.3.2**（本身也是由 deepseek v4 flash vision exp 开发()）
+
+## 适配内核
+
+| 内核版本 | 状态 |
+|---|---|
+| 0.1.2-rc.1（DSH Desktop 0.8.1 内置） | ✅ 已实测 |
+| 0.1.5-rc.1（npm `latest`） | ✅ 已实测 |
+| 0.1.5-rc.2（npm `next`） | ✅ 已实测 |
+| ≤ 0.1.1-rc.x | ⚠ 未实测 |
+
+`package.json` 声明：`engines.dsh: ">=0.1.2-rc.1"`，另附 `dsh.compatibility.dshReleases` 逐版本表。
+
+自验：`node verify-kernel.mjs <内核树A> [内核树B] ...` —— 26 项宿主契约逐条对比，退出码 `0` 表示不用改代码。
 
 ## 功能
 
@@ -65,6 +78,18 @@ DeepSeek Harness 高清识图增强插件 **v0.3.1**（本身也是由 deepseek 
 > 没变的部分：纯 Node 实现（依赖 `jimp`，不需要 Python / Pillow）、不覆盖宿主 `read_image`、
 > 识别后清理本次临时目录而不动附件库。
 
+## 相对 v0.3.1 的改动
+
+| # | 改动 | 说明 |
+|---|---|---|
+| 1 | **修复「不传参数自动取会话最近一张图」恒失败** | `findLatestSessionImage()` 读的 `session.events` 在 harness 0.1.2-rc.1 的 `Session` 上**不存在**（只有 `snapshotEvents()` / `ownEvents()` / `eventAt()` / `seq`），判定恒为 `undefined` → 不传参数的调用一律返回 `file_path/image/attachmentId is required`。改用 `session.snapshotEvents()`，保留 `events` 作更旧内核回退 |
+| 2 | **`verify.mjs` 补上该路径的回归用例** | 之前只测 tile / model-budget / model-detect 三块纯函数，所以这个缺陷从 v0.2.0 一路带到 v0.3.1。现在导出 `sessionEvents` / `findLatestSessionImage` 并直接断言 |
+| 3 | **声明适配内核** | `package.json` 加 `engines.dsh: ">=0.1.2-rc.1"` 与 `dsh.compatibility.dshReleases` 逐版本表 |
+| 4 | **新增 `verify-kernel.mjs`** | 26 项宿主契约在任意几棵内核树上逐条对比，判断「换内核要不要改代码」 |
+
+> 影响面：带 `file_path` 或 `attachmentId` 的显式调用一直是好的，
+> 坏的只有「让插件自己去会话里找最近一张用户附图」这条最省事的路径。
+
 ## 配置
 
 ```yaml
@@ -101,8 +126,9 @@ Node >= 18，依赖 `jimp` 安装时自动装好，不需要 Python / Pillow。
 自检（不装插件也能跑）：
 
 ```powershell
-node verify.mjs            # 自包含合成图，预期 98 通过 / 0 失败
+node verify.mjs            # 自包含合成图，预期 112 通过 / 0 失败
 node verify.mjs <样本目录>  # 额外跑本地真实图片
+node verify-kernel.mjs <内核树A> [内核树B] [...]   # 内核契约对比，退出码 0 = 全部一致
 ```
 
 ## 回滚

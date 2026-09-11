@@ -1,5 +1,93 @@
 # CHANGELOG
 
+## 0.3.2 — 2026-09-11
+
+**修复 harness 0.1.2-rc.1 上「无参数自动取会话最近一张图」恒失败的兼容缺陷。**
+
+### 修复
+
+- **`lib/index.js`：`findLatestSessionImage` 不再读 `session.events`，改读
+  `session.snapshotEvents()`（保留 `events` 作为更旧内核回退）。**
+
+  harness 0.1.2-rc.1 的 `@deepseek-ai/dsh-session` 里，`Session` 只暴露
+  `snapshotEvents()` / `ownEvents()` / `eventAt()` / `seq` / `eventAt()`，
+  **没有 `events` 属性**。旧代码 `Array.isArray(session.events)` 恒为 `false`，
+  于是 `findLatestSessionImage()` 恒返回 `undefined`，`highres_read` 在
+  「不传参数、自动用会话里最近一张用户附图」这条**最常用的调用方式**上直接
+  返回 `file_path/image/attachmentId is required, or attach an image in this session`。
+
+  这条路径此前没被 `verify.mjs` 覆盖（它只测 tile / model-budget /
+  model-detect 三块纯函数），所以 v0.2.0 → v0.3.1 一路都带着它。
+  **v0.3.2 已补上回归用例**：导出 `sessionEvents` / `findLatestSessionImage`，
+  在 `verify.mjs` 里对「只有 snapshotEvents 的现行内核」「只有 events 的旧内核」
+  「快照抛错 / 返回非数组」「无会话 / 无图」逐条断言（自检从 98 → 112 项）。
+
+  实测（2000×1500 PNG + 真实 `Session` + 桩 `read_image`）：
+
+  | 版本 | 无参数调用结果 |
+  |---|---|
+  | v0.3.1 | `{ ok: false, error: 'file_path/image/attachmentId is required…' }` |
+  | v0.3.2 | `{ ok: true, tileSize: 1300, tileCount: 4, items: [整图, 块1…块4] }` |
+
+### 影响面
+
+- 坏的只有「让插件自己去会话里找最近一张用户附图」这条路径；
+  带 `file_path` / `attachmentId` 的显式调用一直正常。
+- `pre-step` 提醒（`hasImageInMessages`）走的是 `messages` 参数，不受影响。
+
+### 新增：声明适配内核 + 内核契约探针
+
+- **`package.json` 声明宿主范围**：
+  - 顶层 `engines.dsh: ">=0.1.2-rc.1"` —— 插件市场的发现层读的就是这个字段
+    （`dshmarket/lib/discovery-compatibility.js` 的 `manifestFacts()`），并按
+    `includePrerelease: true` 判定：0.1.2-rc.1 / 0.1.3-alpha.2 / 0.1.5-alpha.1 /
+    0.1.5-rc.1 / 0.1.5-rc.2 全部满足，0.1.0-rc.6 正确判不满足（已实测）。
+    **不写 `dsh.engines.dsh`**：那一层没有任何宿主/市场代码读它。
+  - `dsh.compatibility.dshReleases` 逐版本表（0.1.2-rc.1 / 0.1.5-rc.1 / 0.1.5-rc.2 = compatible）。
+- **新增 `verify-kernel.mjs`**：把插件依赖的 **26 项宿主契约**在任意几棵内核树上逐条对比，
+  第一个当基线，退出码 0 = 无需改代码。不联网、不需要 jimp、不装插件。
+
+### 内核适配实测：0.1.2-rc.1 → 0.1.5-rc.2，**不用改代码**
+
+| 内核 | `dsh-session` | 26 项契约 | 端到端（无参数取图） |
+|---|---|---|---|
+| 0.1.2-rc.1（Desktop 0.8.1 内置） | 0.1.2-rc.1 | ✅ 全一致 | ✅ ok: true |
+| 0.1.5-rc.1（npm `latest`） | 0.1.5-rc.1 | ✅ 全一致 | ✅ ok: true |
+| 0.1.5-rc.2（npm `next`） | 0.1.5-rc.2 | ✅ 全一致 | ✅ ok: true |
+
+逐层核对结果：
+
+- **Session 层**：`snapshotEvents()` / `ownEvents()` / `eventAt()` / `requestHeader()` /
+  `header.cwd` 契约不变。0.1.5 新增 `dsh-session-format` / `-v0-to-v1` / `-v1-to-v2` / `-v2-to-v3` /
+  `-catalog` 一组包做事件格式迁移，但这层读取接口没动。
+- **工具层**：`tools.register()` 仍要求 `output { schema, render }`；输入仍读
+  `definition.parameters`；JSON Schema 允许子集仍是
+  `type/oneOf/properties/required/additionalProperties/items/enum/const` + 注解
+  `description/title/default/examples`；`tools.restrict({ allow, deny })` 仍只接受 `agent.ctx`。
+- **配置层**：`attachment-local` 的 10 个图片相关键一字不差；`llm-deepseek` 25 → 26 个键，
+  唯一新增的 `systemPromptUpdate` 与图片无关；插件写的 `maxInlineRequestImageBytes`
+  与 `inlineImageOffloadByteQuantum <= maxInlineRequestImageBytes` 约束都还在。
+- **装配层**：`dsh-base/cordis.patch.yml` 的 entry id 列表两版**逐字节一致**，
+  `attachment-local` / `llm-deepseek` 两行仍能命中。
+- **事件层**：`user/message` 的 `data` 仍是消息本体（`content` 数组）；
+  `agent/pre-step` 仍是 `{ kind: 'enter' | 'reject', messages }`。
+
+> 顺手纠正一个隐含结论：v0.3.1 读 `session.events` 的写法**在 0.1.2-rc.1 上就已经是错的**，
+> 不是新内核才坏 —— 0.1.5 同样没有 `events` 属性。
+
+### 未改动（已逐项核对 0.1.2-rc.1 契约，均有效）
+
+- `cordis.patch.yml` 的全部键名：`attachment-local` 的
+  `maxImageBytes` / `maxImageDimension` / `maxImagePixels` /
+  `maxImagesPerMessage` / `maxMessageImageBytes` / `normalizedImage*`，
+  以及 `llm-deepseek` 的 `maxInlineRequestImageBytes` —— 都在 0.1.2-rc.1 的
+  schema 里存在。
+- `ctx.tools.register()` / `ctx.tools.get(name, agent)` /
+  `agent.ctx.tools.restrict({ deny })`、`settings.section/get/update`、
+  `settings/updated`、`sessionProjections.stateOf(session, 'modelSelection')`、
+  `session.requestHeader()`、`session.header.cwd`、
+  `agent/pre-step` 的 `{ kind: 'enter' | 'reject', messages }` 契约。
+
 ## 0.3.1 — 2026-09-10
 
 **修复 v0.3.0 漏掉的最上游一层：附件规范化预算。**

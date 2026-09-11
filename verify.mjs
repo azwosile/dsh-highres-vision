@@ -1,5 +1,6 @@
-// dsh-highres-vision 离线自检（v0.3.0）：不安装、不联网。
-// 覆盖三块：分块引擎纯函数、模型预算规划、端到端分块产物。
+// dsh-highres-vision 离线自检（v0.3.2）：不安装、不联网。
+// 覆盖五块：分块引擎纯函数、模型预算规划、模型识别与开关、
+//           index.js 会话事件读取、端到端分块产物。
 //
 // 用法（在插件目录下，先让它能解析到 jimp）：
 //   npm install                                  # 或软链一个已有的 node_modules
@@ -319,6 +320,71 @@ console.log(`\n== model-detect: decideAgentGate ==`)
   const r = MD.decideAgentGate(ctx, fakeAgent(undefined), { enabled: false })
   check('deepseekOnly=false → 恒 allow', [r.allowed, r.reason], [true, 'disabled'])
 }
+
+// ── lib/index.js：会话事件读取（harness 0.1.2-rc.1 适配，v0.3.2 新增）─────
+// 回归 v0.3.1 的静默失效：那条路径读 `session.events`，而 0.1.2-rc.1 的
+// @deepseek-ai/dsh-session 里 Session 只有 snapshotEvents() / ownEvents() /
+// eventAt() / seq，没有 `events` → 「无参数自动取会话最近一张用户图」恒失败。
+// 这一节是纯对象断言，不需要真实内核、也不需要 DSH_HOME。
+const IDX = await import(new URL('./lib/index.js', import.meta.url).href)
+
+console.log(`\n== index.js: sessionEvents（内核版本适配）==`)
+
+// 0.1.2-rc.1 的真实形态：有 snapshotEvents()，没有 events
+const KERNEL_0_1_2 = { snapshotEvents: () => [{ type: 'user/message' }] }
+check('现行内核：采用 snapshotEvents()', IDX.sessionEvents(KERNEL_0_1_2), [{ type: 'user/message' }])
+check('现行内核：不依赖 events 属性', 'events' in KERNEL_0_1_2, false)
+check('更旧内核回退：events', IDX.sessionEvents({ events: [{ type: 'user/message' }] }), [{ type: 'user/message' }])
+check('快照抛错 → 回退 events', IDX.sessionEvents({
+  snapshotEvents: () => { throw new Error('boom') },
+  events: [1],
+}), [1])
+check('快照返回非数组 → 回退 events', IDX.sessionEvents({ snapshotEvents: () => 'nope', events: [2] }), [2])
+check('两者皆无 → undefined', IDX.sessionEvents({}), undefined)
+check('undefined 安全', IDX.sessionEvents(undefined), undefined)
+check('null 安全', IDX.sessionEvents(null), undefined)
+
+console.log(`\n== index.js: findLatestSessionImage（无参数取图路径）==`)
+
+const ATT_ID = 'ab'.repeat(32)
+const IMG_EVENT = {
+  type: 'user/message',
+  data: {
+    content: [
+      { type: 'text', text: '看图' },
+      {
+        type: 'image',
+        attachment: {
+          attachmentId: `sha256:${ATT_ID}`,
+          mediaType: 'image/png',
+          width: 2000,
+          height: 1500,
+          name: 'shot.png',
+        },
+      },
+    ],
+  },
+}
+const execOf = (session) => ({ agent: { session } })
+const EXPECTED = {
+  attachmentId: `sha256:${ATT_ID}`,
+  mediaType: 'image/png',
+  width: 2000,
+  height: 1500,
+  name: 'shot.png',
+}
+check('现行内核（只有 snapshotEvents）取到最近一张图',
+  IDX.findLatestSessionImage(execOf({ snapshotEvents: () => [IMG_EVENT] })), EXPECTED)
+check('v0.3.1 形态（只有 events）仍可用',
+  IDX.findLatestSessionImage(execOf({ events: [IMG_EVENT] })), EXPECTED)
+check('取的是最后一张图（倒序遍历）',
+  IDX.findLatestSessionImage(execOf({ snapshotEvents: () => [IMG_EVENT, IMG_EVENT] })), EXPECTED)
+check('无 session → undefined', IDX.findLatestSessionImage({ agent: {} }), undefined)
+check('无 agent → undefined', IDX.findLatestSessionImage(undefined), undefined)
+check('有消息但无图 → undefined',
+  IDX.findLatestSessionImage(execOf({
+    snapshotEvents: () => [{ type: 'user/message', data: { content: [{ type: 'text', text: 'hi' }] } }],
+  })), undefined)
 
 console.log(`\n== 端到端分块（jimp）==`)
 
